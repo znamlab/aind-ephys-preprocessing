@@ -615,6 +615,10 @@ if __name__ == "__main__":
                 preprocessing_output_folder.mkdir()
                 error_file = preprocessing_output_folder / "error.txt"
                 error_file.write_text(skip_reason)
+                
+                # Exit with error and clear message for Nextflow to catch
+                sys.stderr.write(f"\n\nCRITICAL ERROR: {skip_reason}\n\n")
+                sys.exit(1)
 
             # store recording for drift visualization
             preprocessing_visualization_data[recording_name]["drift"] = dict(
