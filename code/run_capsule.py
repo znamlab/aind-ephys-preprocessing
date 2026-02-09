@@ -447,6 +447,70 @@ if __name__ == "__main__":
                         highpass=recording_rm_out.to_dict(relative_to=data_folder, recursive=True),
                         cmr=recording_processed_cmr.to_dict(relative_to=data_folder, recursive=True),
                     )
+                    
+                    # GFIX Integration
+                    if preprocessing_params.get("gfix", {}).get("enabled", False):
+                        logging.info("\tApplying Gfix artifact removal")
+                        try:
+                            # Gfix is not in standard SpikeInterface, so we use the local gfix.py
+                            # We need to wrap it in a custom preprocessing class or apply it to traces directly?
+                            # Since apply_gfix works on traces, doing it efficiently in SI requires a custom preprocessor
+                            # For now, we can use a small wrapper if we had one, BUT
+                            # apply_gfix takes arrays. To use it with SI, we need a wrapper 
+                            # or we can use the 'transform_traces' logic if available.
+                            # Simpler hack for this "quick" test:
+                            # Dynamic import of cricksorting.gfix
+                            from cricksorting.gfix import apply_gfix
+                            
+                            # Define a wrapper for SI
+                            class GfixRecording(spre.BasePreprocessor):
+                                name = 'gfix'
+                                def __init__(self, recording, amplitude_threshold, slope_threshold, settle_threshold):
+                                    spre.BasePreprocessor.__init__(self, recording)
+                                    self._kwargs = dict(
+                                        amplitude_threshold=amplitude_threshold,
+                                        slope_threshold=slope_threshold,
+                                        settle_threshold=settle_threshold
+                                    )
+                                    
+                                def get_traces(self, start_frame=None, end_frame=None, channel_ids=None, return_scaled=True):
+                                    traces = self.parent_recording.get_traces(start_frame, end_frame, channel_ids, return_scaled)
+                                    # apply_gfix expects (n_samples, n_channels)
+                                    # It modifies in place or returns copy.
+                                    fixed_traces = apply_gfix(
+                                        traces, 
+                                        amp_thresh=self._kwargs['amplitude_threshold'],
+                                        slope_thresh=self._kwargs['slope_threshold'],
+                                        settle_thresh=self._kwargs['settle_threshold']
+                                    )
+                                    return fixed_traces
+
+                            gfix_params = preprocessing_params["gfix"]
+                            recording_gfix = GfixRecording(
+                                recording_rm_out, # Apply Gfix BEFORE CMR/Destripe? Usually YES, on raw-ish data
+                                amplitude_threshold=gfix_params.get("amplitude_threshold", 0.40),
+                                slope_threshold=gfix_params.get("slope_threshold", 0.10),
+                                settle_threshold=gfix_params.get("settle_threshold", 0.02)
+                            )
+                            # Now update the input for the next steps
+                            # If we use gfix, we pass IT to CMR/Spatial
+                            recording_rm_out = recording_gfix
+                            
+                            # Re-calculate CMR on the gfixed data
+                            recording_processed_cmr = spre.common_reference(
+                                recording_rm_out, **preprocessing_params["common_reference"]
+                            )
+                            
+                            logging.info("\tGfix applied successfully")
+                            preprocessing_notes += "\n- Applied Gfix artifact removal.\n"
+                        except ImportError:
+                            logging.warning("\tCould not import cricksorting.gfix. Skipping Gfix.")
+                            preprocessing_notes += "\n- Failed to apply Gfix (ImportError).\n"
+                        except Exception as e:
+                            logging.warning(f"\tGfix failed: {e}")
+                            preprocessing_notes += f"\n- Failed to apply Gfix: {e}\n"
+
+                    
                     if recording_hp_spatial is not None:
                         preprocessing_visualization_data[recording_name]["timeseries"]["proc"].update(
                             dict(highpass_spatial=recording_hp_spatial.to_dict(relative_to=data_folder, recursive=True))
